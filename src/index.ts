@@ -12,6 +12,7 @@ import { enforceStartupBackoff, resetCircuitBreaker } from './circuit-breaker.js
 import { migrateGroupsToClaudeLocal } from './claude-md-compose.js';
 import { initDb } from './db/connection.js';
 import { runMigrations } from './db/migrations/index.js';
+import { resetAllContainerStatuses } from './db/sessions.js';
 import { ensureContainerRuntimeRunning, cleanupOrphans } from './container-runtime.js';
 import { startActiveDeliveryPoll, startSweepDeliveryPoll, setDeliveryAdapter, stopDeliveryPolls } from './delivery.js';
 import { startHostSweep, stopHostSweep } from './host-sweep.js';
@@ -59,6 +60,7 @@ import './modules/index.js';
 import './cli/commands/index.js';
 import './cli/delivery-action.js';
 import { startCliServer, stopCliServer } from './cli/socket-server.js';
+import { readEnvFile } from './env.js';
 
 import type { ChannelAdapter, ChannelSetup } from './channels/adapter.js';
 import { initChannelAdapters, teardownChannelAdapters, getChannelAdapter } from './channels/channel-registry.js';
@@ -85,6 +87,11 @@ async function main(): Promise<void> {
   // 2. Container runtime
   ensureContainerRuntimeRunning();
   cleanupOrphans();
+  // cleanupOrphans kills any real leftover containers; this reconciles the DB
+  // so sessions a dead host left marked 'running'/'idle' don't show as ghosts
+  // (e.g. on the dashboard). Safe because a fresh host tracks no live spawns.
+  const reset = resetAllContainerStatuses();
+  if (reset > 0) log.info('Reset stale container statuses on startup', { count: reset });
 
   // 3. Channel adapters
   await initChannelAdapters((adapter: ChannelAdapter): ChannelSetup => {
@@ -176,6 +183,19 @@ async function main(): Promise<void> {
 
   // 7. Start the `ncl` CLI socket server (data/ncl.sock).
   await startCliServer();
+
+  // 8. Dashboard (optional)
+  const dashboardEnv = readEnvFile(['DASHBOARD_SECRET', 'DASHBOARD_PORT']);
+  const dashboardSecret = process.env.DASHBOARD_SECRET || dashboardEnv.DASHBOARD_SECRET;
+  const dashboardPort = parseInt(process.env.DASHBOARD_PORT || dashboardEnv.DASHBOARD_PORT || '3100', 10);
+  if (dashboardSecret) {
+    const { startDashboard } = await import('@nanoco/nanoclaw-dashboard');
+    const { startDashboardPusher } = await import('./dashboard-pusher.js');
+    startDashboard({ port: dashboardPort, secret: dashboardSecret });
+    startDashboardPusher({ port: dashboardPort, secret: dashboardSecret, intervalMs: 60000 });
+  } else {
+    log.info('Dashboard disabled (no DASHBOARD_SECRET)');
+  }
 
   log.info('NanoClaw running');
 }

@@ -71,6 +71,20 @@ export function getRunningSessions(): Session[] {
   return getDb().prepare("SELECT * FROM sessions WHERE container_status IN ('running', 'idle')").all() as Session[];
 }
 
+/**
+ * Reset every session's container_status to 'stopped'. Called once on host
+ * startup: a freshly-booted host tracks zero live containers in memory, so any
+ * row still claiming 'running'/'idle' is a ghost left by a previous host that
+ * died before its container's exit handler could fire. Returns the row count
+ * reset so the caller can log it.
+ */
+export function resetAllContainerStatuses(): number {
+  const info = getDb()
+    .prepare("UPDATE sessions SET container_status = 'stopped' WHERE container_status IN ('running', 'idle')")
+    .run();
+  return info.changes;
+}
+
 export function updateSession(
   id: string,
   updates: Partial<Pick<Session, 'status' | 'container_status' | 'last_active' | 'agent_provider'>>,
