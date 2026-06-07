@@ -23,6 +23,8 @@ ARG CLAUDE_CODE_VERSION=2.1.154
 ARG AGENT_BROWSER_VERSION=latest
 ARG VERCEL_VERSION=52.2.1
 ARG BUN_VERSION=1.3.12
+# GitHub CLI — pinned release tarball (not in default Debian apt). Bump deliberately.
+ARG GH_VERSION=2.93.0
 
 # ---- System dependencies -----------------------------------------------------
 # tini: correct PID 1 / signal forwarding so outbound.db writes finalize on
@@ -55,6 +57,28 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         apt-get install -y --no-install-recommends fonts-noto-cjk; \
        fi \
     && rm -rf /var/lib/apt/lists/*
+
+# ---- GitHub CLI (gh) ---------------------------------------------------------
+# Agents use `gh` (and git) for all GitHub I/O; outbound HTTPS is injected with
+# credentials by the OneCLI proxy at runtime. Pinned tarball, multi-arch.
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in \
+      amd64) gharch=amd64 ;; \
+      arm64) gharch=arm64 ;; \
+      *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${gharch}.tar.gz" -o /tmp/gh.tar.gz; \
+    tar -xzf /tmp/gh.tar.gz -C /tmp; \
+    install -m 0755 "/tmp/gh_${GH_VERSION}_linux_${gharch}/bin/gh" /usr/local/bin/gh; \
+    rm -rf /tmp/gh.tar.gz "/tmp/gh_${GH_VERSION}_linux_${gharch}"; \
+    gh --version
+
+# gh refuses to talk to the API without a token configured. The real token is
+# injected by the OneCLI proxy at the HTTPS boundary (per host pattern), so a
+# non-secret placeholder here is enough to get gh to make the request — the
+# proxy replaces the Authorization header. Mirrors add-vercel's `--token placeholder`.
+ENV GH_TOKEN=placeholder
 
 # Chromium path for agent-browser / Playwright consumers
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
