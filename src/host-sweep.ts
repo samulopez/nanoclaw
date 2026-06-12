@@ -171,7 +171,16 @@ async function sweepSession(session: Session): Promise<void> {
       syncProcessingAcks(inDb, outDb);
     }
 
-    // 2. Wake a container if work is due and nothing is running. Ordered
+    // 2. Gate due tasks behind their optional precondition. A task whose
+    // precondition reports "no work" is completed in place (recurrence intact)
+    // so step 5 re-arms it next tick — no container spawned. Must run before
+    // countDueMessages so skipped rows drop out of the due count below.
+    // MODULE-HOOK:scheduling-precondition:start
+    const { applyDuePreconditions } = await import('./modules/scheduling/precondition.js');
+    applyDuePreconditions(inDb, session);
+    // MODULE-HOOK:scheduling-precondition:end
+
+    // 3. Wake a container if work is due and nothing is running. Ordered
     // before the crashed-container cleanup so a fresh container gets a chance
     // to clean its own orphan processing_ack rows on startup (see
     // container/agent-runner/src/db/connection.ts). Otherwise the reset path
@@ -187,12 +196,12 @@ async function sweepSession(session: Session): Promise<void> {
 
     const alive = isContainerRunning(session.id);
 
-    // 3. Running-container SLA: absolute ceiling + per-claim stuck rules.
+    // 4. Running-container SLA: absolute ceiling + per-claim stuck rules.
     if (alive && outDb) {
       enforceRunningContainerSla(inDb, outDb, session, agentGroup.id);
     }
 
-    // 4. Crashed-container cleanup: processing rows left behind get retried.
+    // 5. Crashed-container cleanup: processing rows left behind get retried.
     // Only fires when wake in step 2 didn't pick up the work (no due messages,
     // or wake failed). resetStuckProcessingRows itself is idempotent — it
     // skips messages already scheduled for a future retry.
@@ -200,7 +209,7 @@ async function sweepSession(session: Session): Promise<void> {
       resetStuckProcessingRows(inDb, outDb, session, 'container not running');
     }
 
-    // 5. Recurrence fanout for completed recurring tasks.
+    // 6. Recurrence fanout for completed recurring tasks.
     // MODULE-HOOK:scheduling-recurrence:start
     const { handleRecurrence } = await import('./modules/scheduling/recurrence.js');
     await handleRecurrence(inDb, session);
