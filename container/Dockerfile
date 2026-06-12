@@ -25,6 +25,15 @@ ARG VERCEL_VERSION=52.2.1
 ARG BUN_VERSION=1.3.12
 # GitHub CLI — pinned release tarball (not in default Debian apt). Bump deliberately.
 ARG GH_VERSION=2.93.0
+# Go toolchain for Go-based agent repos (e.g. la-quiniela). Versions track that
+# repo's contract: GO_VERSION = go.mod's `go` directive, GOLANGCILINT_VERSION =
+# the Makefile's pinned linter (the Makefile self-fetches it via `go run @ver`,
+# so we only pre-warm the module/build cache here — no system binary needed).
+# gofumpt is the one tool `make fmt` expects on PATH; the repo doesn't pin it,
+# so we pin a current stable. Bump these alongside the repo, deliberately.
+ARG GO_VERSION=1.26.4
+ARG GOLANGCILINT_VERSION=v2.12.2
+ARG GOFUMPT_VERSION=v0.10.0
 
 # ---- System dependencies -----------------------------------------------------
 # tini: correct PID 1 / signal forwarding so outbound.db writes finalize on
@@ -51,6 +60,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         ca-certificates \
         curl \
         git \
+        make \
         tini \
         unzip \
     && if [ "$INSTALL_CJK_FONTS" = "true" ]; then \
@@ -79,6 +89,43 @@ RUN set -eux; \
 # non-secret placeholder here is enough to get gh to make the request — the
 # proxy replaces the Authorization header. Mirrors add-vercel's `--token placeholder`.
 ENV GH_TOKEN=placeholder
+
+# ---- Go toolchain ------------------------------------------------------------
+# Go-based agent repos build/test/lint via their Makefile, which needs a real Go
+# toolchain (absent from node:slim). Installed from the official multi-arch
+# tarball, pinned to the repo's go.mod version.
+#
+# GOPATH/GOCACHE live under a single world-writable /go so the unprivileged
+# `node` user can extend them at runtime AND reuse what we pre-warm here. We
+# pre-warm the pinned golangci-lint (module download + compile) and install
+# gofumpt, so the agent doesn't re-download/recompile the toolchain on every
+# scheduled run (containers are --rm; per-user $HOME caches don't survive).
+ENV GOPATH=/go \
+    GOCACHE=/go/cache \
+    GOMODCACHE=/go/pkg/mod \
+    PATH=/usr/local/go/bin:/usr/local/bin:$PATH
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in \
+      amd64) goarch=amd64 ;; \
+      arm64) goarch=arm64 ;; \
+      *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${goarch}.tar.gz" -o /tmp/go.tar.gz; \
+    tar -C /usr/local -xzf /tmp/go.tar.gz; \
+    rm -f /tmp/go.tar.gz; \
+    # symlink into /usr/local/bin (on the default profile PATH) so `go`/`gofmt` \
+    # resolve even under a login shell that resets PATH from /etc/profile \
+    ln -sf /usr/local/go/bin/go /usr/local/bin/go; \
+    ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt; \
+    go version; \
+    # gofumpt on PATH for `make fmt` \
+    GOBIN=/usr/local/bin go install "mvdan.cc/gofumpt@${GOFUMPT_VERSION}"; \
+    gofumpt --version; \
+    # pre-warm pinned golangci-lint (the Makefile invokes it via `go run @ver`) \
+    go run "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCILINT_VERSION}" --version; \
+    # let the runtime `node` user read + extend the shared caches \
+    chmod -R a+rwX /go
 
 # Chromium path for agent-browser / Playwright consumers
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
