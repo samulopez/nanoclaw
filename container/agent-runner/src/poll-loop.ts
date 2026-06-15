@@ -69,6 +69,13 @@ export interface PollLoopConfig {
    * polling forever and stealing messages from the next test's DB.
    */
   signal?: AbortSignal;
+  /**
+   * When true, discard any persisted continuation at startup so this
+   * container begins a brand-new conversation instead of resuming the prior
+   * transcript. Used by per-tick agents (e.g. cron coders) that want each
+   * spawn to start clean.
+   */
+  freshSession?: boolean;
 }
 
 /**
@@ -88,6 +95,15 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
   // other providers may reload a thread ID, etc.). Keyed per-provider so
   // a Codex thread id never gets handed to Claude or vice versa.
   let continuation: string | undefined = migrateLegacyContinuation(config.providerName);
+
+  // Fresh-session mode: this group wants every spawn to start a new
+  // conversation (e.g. a cron coder where each tick is an independent job).
+  // Drop any persisted continuation before it can be resumed.
+  if (config.freshSession && continuation) {
+    log('Fresh-session mode — discarding prior continuation; starting clean');
+    clearContinuation(config.providerName);
+    continuation = undefined;
+  }
 
   // Before resuming, drop a session whose on-disk transcript has grown too
   // large/old to cold-resume within the host's idle ceiling. Without this a

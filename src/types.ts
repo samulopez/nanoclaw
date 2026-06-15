@@ -25,6 +25,7 @@ export interface ContainerConfigRow {
   packages_npm: string; // JSON: string[]
   additional_mounts: string; // JSON: AdditionalMountConfig[]
   cli_scope: string; // 'disabled' | 'group' | 'global'
+  fresh_session: number; // 0 | 1 — clear continuation at each spawn (no conversation resume)
   updated_at: string;
 }
 

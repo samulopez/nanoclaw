@@ -43,6 +43,8 @@ export interface ContainerConfig {
   maxMessagesPerPrompt?: number;
   model?: string;
   effort?: string;
+  /** When true, the runner starts a fresh conversation each spawn (no resume). */
+  freshSession?: boolean;
 }
 
 /** Build a `ContainerConfig` from a DB row + agent group identity. */
@@ -63,6 +65,7 @@ export function configFromDb(row: ContainerConfigRow, group: AgentGroup): Contai
     maxMessagesPerPrompt: row.max_messages_per_prompt ?? undefined,
     model: row.model ?? undefined,
     effort: row.effort ?? undefined,
+    freshSession: row.fresh_session === 1 ? true : undefined,
   };
 }
 
