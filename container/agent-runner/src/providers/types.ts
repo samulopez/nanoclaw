@@ -132,6 +132,13 @@ export type ProviderEvent =
   | { type: 'error'; message: string; retryable: boolean; classification?: string }
   | { type: 'progress'; message: string }
   /**
+   * A file the provider produced during the turn (e.g. an image the Codex
+   * harness wrote to its thread dir). The poll-loop's event switch is
+   * non-exhaustive and currently ignores it; providers emit it so consumers
+   * that do care can pick it up without a provider-side change.
+   */
+  | { type: 'file'; path: string }
+  /**
    * Liveness signal. Providers MUST yield this on every underlying SDK
    * event (tool call, thinking, partial message, anything) so the
    * poll-loop's idle timer stays honest during long tool runs.
