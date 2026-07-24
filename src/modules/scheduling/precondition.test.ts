@@ -10,7 +10,7 @@ import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { ensureSchema, openInboundDb } from '../../db/session-db.js';
-import { insertTask } from './db.js';
+import { insertTaskRow as insertTask } from './db.js';
 import { applyDuePreconditions } from './precondition.js';
 import { handleRecurrence } from './recurrence.js';
 import type { Session } from '../../types.js';
@@ -41,11 +41,9 @@ function fakeSession(): Session {
 function dueTask(id: string, content: Record<string, unknown>) {
   return {
     id,
+    seriesId: id,
     processAfter: '2020-01-01T00:00:00.000Z', // already due
     recurrence: '0 */2 * * *',
-    platformId: null,
-    channelType: null,
-    threadId: null,
     content: JSON.stringify(content),
   };
 }

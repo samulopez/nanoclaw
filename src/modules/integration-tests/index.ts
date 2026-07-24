@@ -28,6 +28,7 @@ import { spawn } from 'child_process';
 import os from 'os';
 
 import { registerDeliveryAction } from '../../delivery.js';
+import { unguarded } from '../../guard/index.js';
 import { openInboundDb, insertMessage } from '../../db/session-db.js';
 import { inboundDbPath } from '../../session-manager.js';
 import { log } from '../../log.js';
@@ -96,101 +97,107 @@ function writeResult(
   }
 }
 
-registerDeliveryAction('run_integration_tests', async (content, session) => {
-  const requestId = content.requestId as string;
+registerDeliveryAction(
+  'run_integration_tests',
+  async (content, session) => {
+    const requestId = content.requestId as string;
 
-  if (!requestId || !/^[A-Za-z0-9_-]+$/.test(requestId)) {
-    log.warn('run_integration_tests: missing/invalid requestId', { sessionId: session.id });
-    return;
-  }
-
-  const entry = ALLOWLIST[session.agent_group_id];
-  if (!entry) {
-    log.warn('run_integration_tests: agent group not allowlisted', {
-      sessionId: session.id,
-      agentGroupId: session.agent_group_id,
-    });
-    writeResult(session, requestId, {
-      ok: false,
-      exitCode: null,
-      output: '',
-      error: 'integration-test runner is not enabled for this agent group',
-    });
-    return;
-  }
-
-  if (inFlight.has(session.id)) {
-    writeResult(session, requestId, {
-      ok: false,
-      exitCode: null,
-      output: '',
-      error: 'an integration-test run is already in progress for this session',
-    });
-    return;
-  }
-
-  inFlight.add(session.id);
-  log.info('run_integration_tests: starting', {
-    requestId,
-    sessionId: session.id,
-    cwd: entry.cwd,
-    command: entry.command.join(' '),
-  });
-
-  // Detached run — return now, report on child exit.
-  const [cmd, ...args] = entry.command;
-  const child = spawn(cmd, args, {
-    cwd: entry.cwd,
-    env: {
-      ...process.env,
-      // Ensure Go + docker resolve regardless of the service's PATH, and let
-      // Go fetch the exact toolchain the repo pins if it differs.
-      PATH: `/usr/local/go/bin:/usr/local/bin:${process.env.PATH ?? ''}`,
-      GOTOOLCHAIN: 'auto',
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-
-  let output = '';
-  const append = (buf: Buffer) => {
-    output = clampTail(output + buf.toString());
-  };
-  child.stdout.on('data', append);
-  child.stderr.on('data', append);
-
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    child.kill('SIGKILL');
-  }, entry.timeoutMs);
-
-  const finish = (exitCode: number | null) => {
-    clearTimeout(timer);
-    inFlight.delete(session.id);
-    const ok = !timedOut && exitCode === 0;
-    log.info('run_integration_tests: finished', { requestId, sessionId: session.id, ok, exitCode, timedOut });
-    try {
-      writeResult(session, requestId, { ok, exitCode, output, timedOut });
-    } catch (err) {
-      log.error('run_integration_tests: failed to write result', { requestId, sessionId: session.id, err });
+    if (!requestId || !/^[A-Za-z0-9_-]+$/.test(requestId)) {
+      log.warn('run_integration_tests: missing/invalid requestId', { sessionId: session.id });
+      return;
     }
-  };
 
-  child.on('error', (err) => {
-    clearTimeout(timer);
-    inFlight.delete(session.id);
-    log.error('run_integration_tests: spawn error', { requestId, sessionId: session.id, err });
-    try {
+    const entry = ALLOWLIST[session.agent_group_id];
+    if (!entry) {
+      log.warn('run_integration_tests: agent group not allowlisted', {
+        sessionId: session.id,
+        agentGroupId: session.agent_group_id,
+      });
       writeResult(session, requestId, {
         ok: false,
         exitCode: null,
-        output,
-        error: `failed to launch runner: ${err instanceof Error ? err.message : String(err)}`,
+        output: '',
+        error: 'integration-test runner is not enabled for this agent group',
       });
-    } catch {
-      /* best effort */
+      return;
     }
-  });
 
-  child.on('close', (code) => finish(code));
-});
+    if (inFlight.has(session.id)) {
+      writeResult(session, requestId, {
+        ok: false,
+        exitCode: null,
+        output: '',
+        error: 'an integration-test run is already in progress for this session',
+      });
+      return;
+    }
+
+    inFlight.add(session.id);
+    log.info('run_integration_tests: starting', {
+      requestId,
+      sessionId: session.id,
+      cwd: entry.cwd,
+      command: entry.command.join(' '),
+    });
+
+    // Detached run — return now, report on child exit.
+    const [cmd, ...args] = entry.command;
+    const child = spawn(cmd, args, {
+      cwd: entry.cwd,
+      env: {
+        ...process.env,
+        // Ensure Go + docker resolve regardless of the service's PATH, and let
+        // Go fetch the exact toolchain the repo pins if it differs.
+        PATH: `/usr/local/go/bin:/usr/local/bin:${process.env.PATH ?? ''}`,
+        GOTOOLCHAIN: 'auto',
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let output = '';
+    const append = (buf: Buffer) => {
+      output = clampTail(output + buf.toString());
+    };
+    child.stdout.on('data', append);
+    child.stderr.on('data', append);
+
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGKILL');
+    }, entry.timeoutMs);
+
+    const finish = (exitCode: number | null) => {
+      clearTimeout(timer);
+      inFlight.delete(session.id);
+      const ok = !timedOut && exitCode === 0;
+      log.info('run_integration_tests: finished', { requestId, sessionId: session.id, ok, exitCode, timedOut });
+      try {
+        writeResult(session, requestId, { ok, exitCode, output, timedOut });
+      } catch (err) {
+        log.error('run_integration_tests: failed to write result', { requestId, sessionId: session.id, err });
+      }
+    };
+
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      inFlight.delete(session.id);
+      log.error('run_integration_tests: spawn error', { requestId, sessionId: session.id, err });
+      try {
+        writeResult(session, requestId, {
+          ok: false,
+          exitCode: null,
+          output,
+          error: `failed to launch runner: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      } catch {
+        /* best effort */
+      }
+    });
+
+    child.on('close', (code) => finish(code));
+  },
+  unguarded(
+    'allowlist-keyed host runner — the agent supplies no command, only a requestId; the command and cwd come from ALLOWLIST keyed on agent_group_id',
+  ),
+);
