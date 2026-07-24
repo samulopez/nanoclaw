@@ -18,6 +18,7 @@ import { migration019 } from './019-fresh-session.js';
 import { moduleApprovalsPendingApprovals } from './module-approvals-pending-approvals.js';
 import { moduleApprovalsTitleOptions } from './module-approvals-title-options.js';
 import { migration018 } from './018-approvals-approver-user-id.js';
+import { migration019 } from './019-wiring-threads.js';
 
 export interface Migration {
   version: number;
