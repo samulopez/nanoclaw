@@ -228,6 +228,7 @@ describe('Codex process env', () => {
       HOME: '/home/node',
       CODEX_HOME: '/home/node/.codex',
       HTTPS_PROXY: 'http://proxy',
+      GIT_HTTP_PROXY_AUTHMETHOD: 'basic',
       OPENAI_API_KEY: 'sk-test',
       ONECLI_API_KEY: 'onecli-secret',
       SOME_TOKEN: 'token',
@@ -237,6 +238,7 @@ describe('Codex process env', () => {
     expect(env.HOME).toBe('/home/node');
     expect(env.CODEX_HOME).toBe('/home/node/.codex');
     expect(env.HTTPS_PROXY).toBe('http://proxy');
+    expect(env.GIT_HTTP_PROXY_AUTHMETHOD).toBe('basic');
     expect(env.OPENAI_API_KEY).toBeUndefined();
     expect(env.ONECLI_API_KEY).toBeUndefined();
     expect(env.SOME_TOKEN).toBeUndefined();

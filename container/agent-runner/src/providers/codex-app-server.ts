@@ -82,6 +82,9 @@ const CODEX_APPROVAL_POLICY = 'never';
 const CODEX_ENV_ALLOWLIST = new Set([
   'ALL_PROXY',
   'CURL_CA_BUNDLE',
+  // OneCLI's GitHub proxy uses this non-secret setting to select its
+  // authentication transport for plain git operations (fetch/push).
+  'GIT_HTTP_PROXY_AUTHMETHOD',
   'GIT_SSL_CAINFO',
   'HOME',
   'HTTP_PROXY',
