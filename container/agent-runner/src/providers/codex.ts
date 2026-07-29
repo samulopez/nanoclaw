@@ -29,7 +29,14 @@ import {
   writeCodexConfigToml,
 } from './codex-app-server.js';
 
-const TURN_TIMEOUT_MS = 10 * 60 * 1000;
+// Last-resort cap on a single turn, for the case where the app-server stops
+// notifying entirely. It is deliberately NOT the run-length policy: the host is
+// the real watchdog (heartbeat age vs ABSOLUTE_CEILING_MS in src/host-sweep.ts,
+// 30 min), and a provider cap shorter than that silently truncates long turns —
+// an AFK agent that fetches a PR, runs lint and a test suite, then writes a
+// review routinely needs more than ten minutes. Kept in step with the host
+// ceiling so exactly one layer decides when a run has gone on too long.
+const TURN_TIMEOUT_MS = 30 * 60 * 1000;
 const SUPPORTED_EFFORTS = new Set<CodexReasoningEffort>(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
 
 export interface CodexRuntimeDeps {

@@ -59,7 +59,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         ca-certificates \
         curl \
         git \
+        jq \
         make \
+        ripgrep \
         tini \
         unzip \
     && if [ "$INSTALL_CJK_FONTS" = "true" ]; then \
@@ -88,6 +90,30 @@ RUN set -eux; \
 # non-secret placeholder here is enough to get gh to make the request — the
 # proxy replaces the Authorization header. Mirrors add-vercel's `--token placeholder`.
 ENV GH_TOKEN=placeholder
+
+# The env var above only reaches tools whose process env the provider forwards.
+# Codex runs its shells with a strict env allowlist (CODEX_ENV_ALLOWLIST in
+# container/agent-runner/src/providers/codex-app-server.ts) that deliberately
+# drops credential-shaped names, so under codex `gh` saw no token at all and
+# every gh call died with "please run gh auth login". Configure the same
+# placeholder in gh's own config file so authentication is provider-independent,
+# and route git's GitHub credentials through gh so plain `git fetch`/`push`
+# authenticate too (they otherwise prompt for a username and fail on a private
+# repo). Both carry only the placeholder; the proxy still owns the real token.
+#
+# Written to gh's default HOME-relative location rather than pointed at with
+# GH_CONFIG_DIR: an env var would be filtered by that same allowlist, whereas
+# HOME is always forwarded. Nothing mounts over /home/node/.config.
+RUN mkdir -p /home/node/.config/gh \
+    && printf 'github.com:\n    users:\n        placeholder:\n            oauth_token: placeholder\n    oauth_token: placeholder\n    user: placeholder\n    git_protocol: https\n' > /home/node/.config/gh/hosts.yml \
+    && chown -R node:node /home/node/.config \
+    && chmod 600 /home/node/.config/gh/hosts.yml
+# NOTE: deliberately NO git credential helper here. Plain git over HTTPS must
+# keep sending NO Authorization header — that is what lets the OneCLI proxy set
+# its own (`Basic {value}` for github.com). A helper that supplies the
+# placeholder turns "header absent" into "header present and wrong", and the
+# gateway does not appear to overwrite an existing one: git then fails with
+# "Invalid username or token" instead of authenticating.
 
 # ---- Go toolchain ------------------------------------------------------------
 # Go-based agent repos build/test/lint via their Makefile, which needs a real Go
