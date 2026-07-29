@@ -43,8 +43,14 @@ export function materializeTemplateSkills(agentGroupId: string, destSkillsDir: s
   if (path.resolve(src) === path.resolve(destSkillsDir)) return;
 
   fs.mkdirSync(destSkillsDir, { recursive: true });
-  for (const name of fs.readdirSync(src)) {
-    if (!fs.statSync(path.join(src, name)).isDirectory()) continue;
+  // `withFileTypes` reports symlinks as symlinks (lstat semantics), which is
+  // what we want twice over: the source store also holds shared-skill symlinks
+  // pointing at CONTAINER paths (`/app/skills/<name>`) — dangling on the host,
+  // and each provider re-creates its own — so they are neither copyable nor
+  // ours to copy. A `statSync` here would follow them and throw ENOENT.
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const name = entry.name;
     const dest = path.join(destSkillsDir, name);
     fs.rmSync(dest, { recursive: true, force: true });
     fs.cpSync(path.join(src, name), dest, { recursive: true });

@@ -38,6 +38,18 @@ describe('materializeTemplateSkills', () => {
     expect(fs.lstatSync(path.join(dest, 'widget')).isSymbolicLink()).toBe(false);
   });
 
+  it('skips shared-skill symlinks in the source (container targets, dangling on the host)', () => {
+    templateSkill('g5', 'widget', 'SKILL.md', 'body');
+    const src = path.join(DATA_DIR, 'v2-sessions', 'g5', '.claude-shared', 'skills');
+    fs.symlinkSync('/app/skills/code-review', path.join(src, 'code-review'));
+    const dest = path.join(TEST_ROOT, 'grp5', '.agents', 'skills');
+
+    materializeTemplateSkills('g5', dest);
+
+    expect(fs.existsSync(path.join(dest, 'widget', 'SKILL.md'))).toBe(true);
+    expect(fs.existsSync(path.join(dest, 'code-review'))).toBe(false);
+  });
+
   it('is a no-op when the group has no template skills', () => {
     const dest = path.join(TEST_ROOT, 'grp2', '.agents', 'skills');
     materializeTemplateSkills('g2', dest);
