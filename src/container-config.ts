@@ -11,9 +11,10 @@
 import fs from 'fs';
 import path from 'path';
 
-import { GROUPS_DIR } from './config.js';
+import { GROUPS_DIR, TIMEZONE } from './config.js';
 import { getContainerConfig } from './db/container-configs.js';
 import { getAgentGroup } from './db/agent-groups.js';
+import { isValidTimezone } from './timezone.js';
 import type { AgentGroup, ContainerConfigRow } from './types.js';
 
 export interface McpServerConfig {
@@ -45,6 +46,18 @@ export interface ContainerConfig {
   effort?: string;
   /** When true, the runner starts a fresh conversation each spawn (no resume). */
   freshSession?: boolean;
+  timezone?: string;
+}
+
+/**
+ * Effective timezone for an agent group: per-group override → install global.
+ * The ncl write path validates, but a hand-edited DB value must not silently
+ * flip scheduling to UTC — an invalid override falls back to the global tz,
+ * same as no override.
+ */
+export function resolveGroupTimezone(agentGroupId: string): string {
+  const tz = getContainerConfig(agentGroupId)?.timezone;
+  return tz && isValidTimezone(tz) ? tz : TIMEZONE;
 }
 
 /** Build a `ContainerConfig` from a DB row + agent group identity. */
@@ -66,6 +79,7 @@ export function configFromDb(row: ContainerConfigRow, group: AgentGroup): Contai
     model: row.model ?? undefined,
     effort: row.effort ?? undefined,
     freshSession: row.fresh_session === 1 ? true : undefined,
+    timezone: row.timezone && isValidTimezone(row.timezone) ? row.timezone : undefined,
   };
 }
 

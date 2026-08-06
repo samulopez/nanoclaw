@@ -1,8 +1,8 @@
 import type Database from 'better-sqlite3';
 import type { Migration } from './index.js';
 
-export const migration020: Migration = {
-  version: 20,
+export const migration022: Migration = {
+  version: 22,
   name: 'fresh-session',
   up(db: Database.Database) {
     // When 1, the agent-runner clears any persisted continuation at container

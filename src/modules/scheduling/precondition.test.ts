@@ -7,7 +7,11 @@
  */
 import fs from 'fs';
 import path from 'path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('../../container-config.js', () => ({
+  resolveGroupTimezone: () => 'UTC',
+}));
 
 import { ensureSchema, openInboundDb } from '../../db/session-db.js';
 import { insertTaskRow as insertTask } from './db.js';

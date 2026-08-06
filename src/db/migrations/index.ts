@@ -14,11 +14,13 @@ import { migration013 } from './013-approval-render-metadata.js';
 import { migration014 } from './014-container-configs.js';
 import { migration015 } from './015-cli-scope.js';
 import { migration016 } from './016-messaging-group-instance.js';
-import { migration020 } from './020-fresh-session.js';
 import { moduleApprovalsPendingApprovals } from './module-approvals-pending-approvals.js';
 import { moduleApprovalsTitleOptions } from './module-approvals-title-options.js';
 import { migration018 } from './018-approvals-approver-user-id.js';
 import { migration019 } from './019-wiring-threads.js';
+import { migration020 } from './020-container-config-timezone.js';
+import { migration021 } from './021-approval-question.js';
+import { migration022 } from './022-fresh-session.js';
 
 export interface Migration {
   version: number;
@@ -54,6 +56,8 @@ export const migrations: Migration[] = [
   migration016,
   migration019,
   migration020,
+  migration021,
+  migration022,
 ];
 
 /** Row shape of PRAGMA foreign_key_check. Child rowids are stable across a
