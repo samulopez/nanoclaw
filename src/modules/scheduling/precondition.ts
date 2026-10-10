@@ -46,8 +46,9 @@ interface DueTaskRow {
  */
 export function applyDuePreconditions(inDb: InboundMailbox, session: Session): void {
   const now = Date.now();
-  const rows = inDb.listLiveTasks('pending').filter((task) =>
-    task.processAfter !== null && Date.parse(task.processAfter) <= now);
+  const rows = inDb
+    .listLiveTasks('pending')
+    .filter((task) => task.processAfter !== null && Date.parse(task.processAfter) <= now);
 
   for (const row of rows) {
     let precondition: string | undefined;
@@ -62,8 +63,9 @@ export function applyDuePreconditions(inDb: InboundMailbox, session: Session): v
 
     if (preconditionHasWork(precondition, session.id, row.id)) continue;
 
-    inDb.applyProcessingAcks([{ messageId: row.id, status: 'completed',
-      statusChanged: parseIsoTimestamp(new Date().toISOString()) }]);
+    inDb.applyProcessingAcks([
+      { messageId: row.id, status: 'completed', statusChanged: parseIsoTimestamp(new Date().toISOString()) },
+    ]);
     log.info('Skipped scheduled task occurrence — precondition reported no work', {
       sessionId: session.id,
       taskId: row.id,
