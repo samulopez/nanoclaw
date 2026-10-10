@@ -132,7 +132,7 @@ describe('OpenCode setup installation and refresh', () => {
     const result = await applyProviderSkill(codexSkill, directory);
     expect(result.blockers).toEqual([]);
     expect(result.changed).toBe(false);
-    expect(fixture.commands).toEqual([]);
+    expect(fixture.commands).toEqual(['node .claude/skills/add-codex/scripts/local-customizations.mjs']);
     expect(tree(directory)).toEqual(before);
   });
 
