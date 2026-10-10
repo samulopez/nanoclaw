@@ -7,6 +7,8 @@
  */
 import fs from 'fs';
 
+import type { McpServerConfig, ProviderSpeed } from './providers/types.js';
+
 const CONFIG_PATH = '/workspace/agent/container.json';
 
 export interface RunnerConfig {
@@ -15,11 +17,12 @@ export interface RunnerConfig {
   groupName: string;
   agentGroupId: string;
   maxMessagesPerPrompt: number;
-  mcpServers: Record<string, { command: string; args: string[]; env: Record<string, string> }>;
+  mcpServers: Record<string, McpServerConfig>;
   model?: string;
   effort?: string;
   /** When true, clear any persisted continuation at startup — no conversation resume. */
-  freshSession: boolean;
+  freshSession?: boolean;
+  speed?: ProviderSpeed;
 }
 
 const DEFAULT_MAX_MESSAGES = 10;
@@ -40,7 +43,14 @@ export function loadConfig(): RunnerConfig {
     console.error(`[config] Failed to read ${CONFIG_PATH}, using defaults`);
   }
 
-  _config = {
+  _config = runnerConfigFromRaw(raw);
+
+  return _config;
+}
+
+/** Build the runner config from a parsed container.json; missing fields take their defaults. */
+export function runnerConfigFromRaw(raw: Record<string, unknown>): RunnerConfig {
+  return {
     provider: (raw.provider as string) || 'claude',
     assistantName: (raw.assistantName as string) || '',
     groupName: (raw.groupName as string) || '',
@@ -50,9 +60,19 @@ export function loadConfig(): RunnerConfig {
     model: (raw.model as string) || undefined,
     effort: (raw.effort as string) || undefined,
     freshSession: raw.freshSession === true,
+    speed: readSpeed(raw),
   };
+}
 
-  return _config;
+/**
+ * `speed` wins when present; the host already validated it against the
+ * provider's declared tiers, so any non-empty name passes through. A host from
+ * before `speed` existed wrote only `fastMode: true`, so that alone still
+ * means `fast`.
+ */
+function readSpeed(raw: Record<string, unknown>): ProviderSpeed | undefined {
+  if (typeof raw.speed === 'string' && raw.speed !== '') return raw.speed;
+  return raw.fastMode === true ? 'fast' : undefined;
 }
 
 /** Get the loaded config. Throws if loadConfig() hasn't been called. */

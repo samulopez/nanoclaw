@@ -77,8 +77,8 @@ function parseArgs(argv: string[]): Args {
   return { agentRef, message: rest.length ? rest.join(' ') : undefined, list };
 }
 
-function listAgents(): void {
-  const all = getAllAgentGroups();
+async function listAgents(): Promise<void> {
+  const all = await getAllAgentGroups();
   if (all.length === 0) {
     console.error('No agent groups exist yet. Create one with `/init-first-agent` or setup.');
     return;
@@ -90,21 +90,21 @@ function listAgents(): void {
 }
 
 /** Resolve an agent by id, folder, then case-insensitive name. */
-function resolveAgent(ref: string): AgentGroup | { ambiguous: AgentGroup[] } | undefined {
-  const byId = getAgentGroup(ref);
+async function resolveAgent(ref: string): Promise<AgentGroup | { ambiguous: AgentGroup[] } | undefined> {
+  const byId = await getAgentGroup(ref);
   if (byId) return byId;
-  const byFolder = getAgentGroupByFolder(ref);
+  const byFolder = await getAgentGroupByFolder(ref);
   if (byFolder) return byFolder;
   const lower = ref.toLowerCase();
-  const byName = getAllAgentGroups().filter((ag) => ag.name.toLowerCase() === lower);
+  const byName = (await getAllAgentGroups()).filter((ag) => ag.name.toLowerCase() === lower);
   if (byName.length === 1) return byName[0];
   if (byName.length > 1) return { ambiguous: byName };
   return undefined;
 }
 
 /** Point cli/local at `ag` and make sure it's the only agent wired there. */
-function wireExclusively(ag: AgentGroup): void {
-  let mg: MessagingGroup | undefined = getMessagingGroupByPlatform(CLI_CHANNEL, CLI_PLATFORM_ID);
+async function wireExclusively(ag: AgentGroup): Promise<void> {
+  let mg: MessagingGroup | undefined = await getMessagingGroupByPlatform(CLI_CHANNEL, CLI_PLATFORM_ID);
   if (!mg) {
     mg = {
       id: generateId('mg'),
@@ -115,20 +115,20 @@ function wireExclusively(ag: AgentGroup): void {
       unknown_sender_policy: 'public',
       created_at: new Date().toISOString(),
     };
-    createMessagingGroup(mg);
+    await createMessagingGroup(mg);
   }
 
   // Drop any other agent wired to cli/local so only the chosen one answers.
-  for (const wiring of getMessagingGroupAgents(mg.id)) {
+  for (const wiring of await getMessagingGroupAgents(mg.id)) {
     if (wiring.agent_group_id !== ag.id) {
-      const other = getAgentGroup(wiring.agent_group_id);
+      const other = await getAgentGroup(wiring.agent_group_id);
       console.error(`  · unwiring cli/local from "${other?.name ?? wiring.agent_group_id}"`);
-      deleteMessagingGroupAgent(wiring.id);
+      await deleteMessagingGroupAgent(wiring.id);
     }
   }
 
-  if (!getMessagingGroupAgentByPair(mg.id, ag.id)) {
-    createMessagingGroupAgent({
+  if (!(await getMessagingGroupAgentByPair(mg.id, ag.id))) {
+    await createMessagingGroupAgent({
       id: generateId('mga'),
       messaging_group_id: mg.id,
       agent_group_id: ag.id,
@@ -237,28 +237,28 @@ function chat(oneShot: string | undefined, agentName: string): void {
   socket.on('close', () => shutdown(0));
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
 
-  const db = initDb(path.join(DATA_DIR, 'v2.db'));
-  runMigrations(db);
+  const db = await initDb(path.join(DATA_DIR, 'v2.db'));
+  await runMigrations(db);
 
   if (args.list) {
-    listAgents();
+    await listAgents();
     process.exit(0);
   }
 
   if (!args.agentRef) {
     console.error('Missing --agent <name|folder|id>.\n');
-    listAgents();
+    await listAgents();
     console.error('\nUsage: pnpm run talk --agent <ref> [message...]');
     process.exit(2);
   }
 
-  const resolved = resolveAgent(args.agentRef);
+  const resolved = await resolveAgent(args.agentRef);
   if (!resolved) {
     console.error(`No agent matches "${args.agentRef}".\n`);
-    listAgents();
+    await listAgents();
     process.exit(2);
   }
   if ('ambiguous' in resolved) {
@@ -270,7 +270,7 @@ function main(): void {
   }
 
   console.error(`Pointing cli/local at "${resolved.name}" (${resolved.folder})…`);
-  wireExclusively(resolved);
+  await wireExclusively(resolved);
 
   chat(args.message, resolved.name);
 }

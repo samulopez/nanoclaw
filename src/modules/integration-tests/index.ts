@@ -29,8 +29,7 @@ import os from 'os';
 
 import { registerDeliveryAction } from '../../delivery.js';
 import { unguarded } from '../../guard/index.js';
-import { openInboundDb, insertMessage } from '../../db/session-db.js';
-import { inboundDbPath } from '../../session-manager.js';
+import { withExistingMailboxSession } from '../../session-manager.js';
 import { log } from '../../log.js';
 import type { Session } from '../../types.js';
 
@@ -69,14 +68,13 @@ function clampTail(s: string): string {
 }
 
 /** Write a result row the container's poller picks up (trigger=0: context only). */
-function writeResult(
+async function writeResult(
   session: Session,
   requestId: string,
   result: { ok: boolean; exitCode: number | null; output: string; timedOut?: boolean; error?: string },
-): void {
-  const db = openInboundDb(inboundDbPath(session.agent_group_id, session.id));
-  try {
-    insertMessage(db, {
+): Promise<void> {
+  await withExistingMailboxSession(session.agent_group_id, session.id, async (mailbox) => {
+    await mailbox.insertMessage({
       id: `it-resp-${requestId}`,
       kind: 'system',
       timestamp: new Date().toISOString(),
@@ -90,11 +88,9 @@ function writeResult(
       }),
       processAfter: null,
       recurrence: null,
-      trigger: 0,
+      trigger: false,
     });
-  } finally {
-    db.close();
-  }
+  });
 }
 
 registerDeliveryAction(
@@ -113,7 +109,7 @@ registerDeliveryAction(
         sessionId: session.id,
         agentGroupId: session.agent_group_id,
       });
-      writeResult(session, requestId, {
+      await writeResult(session, requestId, {
         ok: false,
         exitCode: null,
         output: '',
@@ -123,7 +119,7 @@ registerDeliveryAction(
     }
 
     if (inFlight.has(session.id)) {
-      writeResult(session, requestId, {
+      await writeResult(session, requestId, {
         ok: false,
         exitCode: null,
         output: '',
@@ -167,24 +163,24 @@ registerDeliveryAction(
       child.kill('SIGKILL');
     }, entry.timeoutMs);
 
-    const finish = (exitCode: number | null) => {
+    const finish = async (exitCode: number | null) => {
       clearTimeout(timer);
       inFlight.delete(session.id);
       const ok = !timedOut && exitCode === 0;
       log.info('run_integration_tests: finished', { requestId, sessionId: session.id, ok, exitCode, timedOut });
       try {
-        writeResult(session, requestId, { ok, exitCode, output, timedOut });
+        await writeResult(session, requestId, { ok, exitCode, output, timedOut });
       } catch (err) {
         log.error('run_integration_tests: failed to write result', { requestId, sessionId: session.id, err });
       }
     };
 
-    child.on('error', (err) => {
+    child.on('error', async (err) => {
       clearTimeout(timer);
       inFlight.delete(session.id);
       log.error('run_integration_tests: spawn error', { requestId, sessionId: session.id, err });
       try {
-        writeResult(session, requestId, {
+        await writeResult(session, requestId, {
           ok: false,
           exitCode: null,
           output,

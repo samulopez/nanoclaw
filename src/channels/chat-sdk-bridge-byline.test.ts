@@ -24,6 +24,7 @@ import { closeDb, initTestDb, runMigrations } from '../db/index.js';
 import { createPendingApproval } from '../db/sessions.js';
 import type { ChannelSetup } from './adapter.js';
 import { createChatSdkBridge } from './chat-sdk-bridge.js';
+import { registerQuestionRenderResolver } from './question-render-registry.js';
 
 interface CapturedEdit {
   threadId: string;
@@ -52,6 +53,7 @@ function terminalText(edit: CapturedEdit): Array<{ type: string; content?: strin
 async function fireAction(
   user: Record<string, unknown>,
   selectedOption = 'approve',
+  actionId = `ncq:q-1:${selectedOption}`,
 ): Promise<{ edits: CapturedEdit[]; actions: string[] }> {
   const edits: CapturedEdit[] = [];
   const actions: string[] = [];
@@ -71,7 +73,7 @@ async function fireAction(
   expect(chat).toBeTruthy();
   await chat.processAction(
     {
-      actionId: `ncq:q-1:${selectedOption}`,
+      actionId,
       adapter,
       messageId: 'msg-1',
       raw: {},
@@ -84,11 +86,11 @@ async function fireAction(
   return { edits, actions };
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   captured.chat = null;
-  const db = initTestDb();
-  runMigrations(db);
-  createPendingApproval({
+  const db = await initTestDb();
+  await runMigrations(db);
+  await createPendingApproval({
     approval_id: 'q-1',
     session_id: null,
     request_id: 'q-1',
@@ -104,38 +106,38 @@ beforeEach(() => {
   });
 });
 
-afterEach(() => {
-  closeDb();
+afterEach(async () => {
+  await closeDb();
 });
 
 describe('chat-sdk-bridge approval-card terminal state', () => {
   it('retains the body, removes actions, and shows the acting user', async () => {
-    const { edits, actions } = await fireAction({ userId: 'U1', userName: 'gavriel', fullName: 'Gavriel C' });
+    const { edits, actions } = await fireAction({ userId: 'U1', userName: 'alex', fullName: 'Alex C' });
 
     expect(edits).toHaveLength(1);
     expect(edits[0].threadId).toBe('T-1');
     expect(edits[0].messageId).toBe('msg-1');
     expect(terminalText(edits[0])).toEqual([
       { type: 'text', content: 'Keep these full request details.' },
-      { type: 'text', content: '✅ Approved by gavriel', style: 'muted' },
+      { type: 'text', content: '✅ Approved by alex', style: 'muted' },
     ]);
     expect(terminalText(edits[0]).some((child) => child.type === 'actions')).toBe(false);
     expect(actions).toEqual(['q-1:approve:U1']);
   });
 
   it('falls back to fullName when userName is missing', async () => {
-    const { edits } = await fireAction({ userId: 'U2', fullName: 'Gavriel C' });
+    const { edits } = await fireAction({ userId: 'U2', fullName: 'Alex C' });
 
     expect(edits).toHaveLength(1);
-    expect(terminalText(edits[0]).at(-1)?.content).toBe('✅ Approved by Gavriel C');
+    expect(terminalText(edits[0]).at(-1)?.content).toBe('✅ Approved by Alex C');
   });
 
   it('renders a rejected decision with the actor and original body', async () => {
-    const { edits, actions } = await fireAction({ userId: 'U4', userName: 'daniel' }, 'reject');
+    const { edits, actions } = await fireAction({ userId: 'U4', userName: 'reviewer' }, 'reject');
 
     expect(terminalText(edits[0])).toEqual([
       { type: 'text', content: 'Keep these full request details.' },
-      { type: 'text', content: '❌ Rejected by daniel', style: 'muted' },
+      { type: 'text', content: '❌ Rejected by reviewer', style: 'muted' },
     ]);
     expect(actions).toEqual(['q-1:reject:U4']);
   });
@@ -149,5 +151,26 @@ describe('chat-sdk-bridge approval-card terminal state', () => {
       content: '✅ Approved',
       style: 'muted',
     });
+  });
+
+  it('resolves compact option indexes through a module resolver', async () => {
+    registerQuestionRenderResolver((questionId) => {
+      if (questionId !== 'module-compact-question') return undefined;
+      return {
+        title: 'Custom approval',
+        options: [{ label: 'Approve', selectedLabel: 'Approved safely', value: 'approve-real-value' }],
+      };
+    });
+
+    const { edits, actions } = await fireAction(
+      { userId: 'U4', userName: 'reviewer' },
+      '0',
+      'ncq:module-compact-question:0',
+    );
+
+    const message = edits[0].message as { markdown: string };
+    expect(message.markdown).toContain('Custom approval');
+    expect(message.markdown).toContain('Approved safely by reviewer');
+    expect(actions).toEqual(['module-compact-question:approve-real-value:U4']);
   });
 });

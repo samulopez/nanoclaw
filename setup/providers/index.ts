@@ -3,3 +3,4 @@
 // Skills add a provider by appending one import line below.
 
 import './codex.js';
+import './claude.js';

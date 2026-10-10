@@ -20,12 +20,13 @@
  * should degrade to the old always-run behaviour, never silently wedge the
  * task into never running.
  *
- * Called from `src/host-sweep.ts` inside MODULE-HOOK:scheduling-precondition,
+ * Called from `src/reconcile-session.ts` inside MODULE-HOOK:scheduling-precondition,
  * immediately before the due-message wake decision.
  */
 import { execSync } from 'node:child_process';
 
-import type Database from 'better-sqlite3';
+import type { InboundMailbox } from '../../mailbox/index.js';
+import { parseIsoTimestamp } from '../../mailbox/model.js';
 
 import { log } from '../../log.js';
 import type { Session } from '../../types.js';
@@ -43,15 +44,10 @@ interface DueTaskRow {
  * recurrence re-arms them without a container spawn. Rows without a
  * precondition, or whose precondition reports work / fails, are left pending.
  */
-export function applyDuePreconditions(inDb: Database.Database, session: Session): void {
-  const rows = inDb
-    .prepare(
-      `SELECT id, content FROM messages_in
-       WHERE kind = 'task' AND status = 'pending'
-         AND process_after IS NOT NULL
-         AND datetime(process_after) <= datetime('now')`,
-    )
-    .all() as DueTaskRow[];
+export function applyDuePreconditions(inDb: InboundMailbox, session: Session): void {
+  const now = Date.now();
+  const rows = inDb.listLiveTasks('pending').filter((task) =>
+    task.processAfter !== null && Date.parse(task.processAfter) <= now);
 
   for (const row of rows) {
     let precondition: string | undefined;
@@ -66,7 +62,8 @@ export function applyDuePreconditions(inDb: Database.Database, session: Session)
 
     if (preconditionHasWork(precondition, session.id, row.id)) continue;
 
-    inDb.prepare("UPDATE messages_in SET status = 'completed' WHERE id = ?").run(row.id);
+    inDb.applyProcessingAcks([{ messageId: row.id, status: 'completed',
+      statusChanged: parseIsoTimestamp(new Date().toISOString()) }]);
     log.info('Skipped scheduled task occurrence — precondition reported no work', {
       sessionId: session.id,
       taskId: row.id,
