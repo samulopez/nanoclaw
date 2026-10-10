@@ -490,14 +490,15 @@ function createSnapshot(state: UpdateState): SnapshotEntry[] {
   // git pack files are 0444 — so copy-in-place died with EACCES.)
   const buildRoot = `${snapshotRoot}.new`;
   const supersededRoot = `${snapshotRoot}.prev`;
-  if (!removeAll(buildRoot)) throw new Error(`Could not remove snapshot staging directory: ${buildRoot}`);
+  if (!removeAll(buildRoot, true)) throw new Error(`Could not remove snapshot staging directory: ${buildRoot}`);
   // Self-heal the rename window: a crash between the two renames leaves
   // `snapshot/` absent with the complete prior copy still in `.prev` — put it
   // back rather than deleting the only complete copy on disk.
   if (!fs.existsSync(snapshotRoot) && fs.existsSync(supersededRoot)) {
     fs.renameSync(supersededRoot, snapshotRoot);
   }
-  if (!removeAll(supersededRoot)) throw new Error(`Could not remove snapshot staging directory: ${supersededRoot}`);
+  if (!removeAll(supersededRoot, true))
+    throw new Error(`Could not remove snapshot staging directory: ${supersededRoot}`);
   fs.mkdirSync(buildRoot, { recursive: true, mode: 0o700 });
   const bytesNeeded = MUTABLE_PATHS.reduce((total, relativePath) => {
     const source = path.join(state.projectRoot, relativePath);
@@ -521,7 +522,8 @@ function createSnapshot(state: UpdateState): SnapshotEntry[] {
   });
   if (fs.existsSync(snapshotRoot)) fs.renameSync(snapshotRoot, supersededRoot);
   fs.renameSync(buildRoot, snapshotRoot);
-  if (!removeAll(supersededRoot)) throw new Error(`Could not remove snapshot staging directory: ${supersededRoot}`);
+  if (!removeAll(supersededRoot, true))
+    throw new Error(`Could not remove snapshot staging directory: ${supersededRoot}`);
   return entries;
 }
 
@@ -624,16 +626,16 @@ function planRestore(state: UpdateState, snapshotRoot: string): RestoreSwap[] {
 
 // Deletes what this user can and keeps going past what it cannot (root-owned
 // mount points Docker created), so only those are left. True if fully gone.
-function removeAll(target: string): boolean {
+function removeAll(target: string, writableSnapshot = false): boolean {
   try {
     const stat = lstatIfExists(target);
     if (!stat) return true;
     if (stat.isDirectory()) {
       // Go module caches are read-only even when owned by this user.
-      if (stat.uid === process.getuid?.() && (stat.mode & 0o700) !== 0o700) {
+      if (writableSnapshot && stat.uid === process.getuid?.() && (stat.mode & 0o700) !== 0o700) {
         fs.chmodSync(target, stat.mode | 0o700);
       }
-      const kept = fs.readdirSync(target).filter((name) => !removeAll(path.join(target, name)));
+      const kept = fs.readdirSync(target).filter((name) => !removeAll(path.join(target, name), writableSnapshot));
       if (kept.length > 0) return false;
       fs.rmdirSync(target);
     } else {
