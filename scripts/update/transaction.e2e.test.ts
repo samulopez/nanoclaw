@@ -289,6 +289,38 @@ afterEach(() => {
 });
 
 describe('update-nanoclaw transaction end to end', () => {
+  it('snapshots and restores populated read-only Go cache directories', async () => {
+    const fixture = createForkFixture();
+    previousUpdateDir = process.env.NANOCLAW_UPDATE_DIR;
+    const stateRoot = temp('nanoclaw-update-state-');
+    process.env.NANOCLAW_UPDATE_DIR = stateRoot;
+    const relative = 'data/go_pkg/pkg/mod/example@v1.0.0';
+    write(fixture.install, `${relative}/.github/config`, 'cache contents\n');
+    const liveCache = path.join(fixture.install, relative);
+    fs.chmodSync(path.join(liveCache, '.github'), 0o555);
+    fs.chmodSync(liveCache, 0o555);
+    const makeWritable = (root: string): void => {
+      if (!fs.lstatSync(root).isDirectory()) return;
+      fs.chmodSync(root, 0o700);
+      for (const name of fs.readdirSync(root)) makeWritable(path.join(root, name));
+    };
+    try {
+      const { runtime } = fakeRuntime(fixture.install);
+      let state = prepareUpdate({ projectRoot: fixture.install, upstreamRef: 'upstream/main' }, runtime);
+      state = await validateUpdate(fixture.install, state.id, runtime);
+      state = await cutoverUpdate(fixture.install, state.id, runtime);
+      const snapshotCache = path.join(state.transactionRoot, 'snapshot', relative);
+      expect(fs.readFileSync(path.join(snapshotCache, '.github/config'), 'utf8')).toBe('cache contents\n');
+      expect(fs.statSync(snapshotCache).mode & 0o777).toBe(0o555);
+      await rollbackUpdate(fixture.install, state.id, runtime);
+      expect(fs.readFileSync(path.join(liveCache, '.github/config'), 'utf8')).toBe('cache contents\n');
+      expect(fs.statSync(liveCache).mode & 0o777).toBe(0o555);
+    } finally {
+      makeWritable(fixture.install);
+      makeWritable(stateRoot);
+    }
+  });
+
   it('applies an implicit OneCLI skill before stamping the extracted gateway selection', async () => {
     const fixture = createForkFixture({ gatewayExtraction: true });
     previousUpdateDir = process.env.NANOCLAW_UPDATE_DIR;

@@ -460,8 +460,10 @@ function copyEntry(source: string, destination: string, dereferenceRoot = false)
   const linkStat = fs.lstatSync(source);
   const stat = dereferenceRoot && linkStat.isSymbolicLink() ? fs.statSync(source) : linkStat;
   if (stat.isDirectory()) {
-    fs.mkdirSync(destination, { recursive: true, mode: stat.mode });
+    // Populate read-only directories before restoring their original mode.
+    fs.mkdirSync(destination, { recursive: true, mode: (stat.mode & 0o777) | 0o700 });
     for (const entry of fs.readdirSync(source)) copyEntry(path.join(source, entry), path.join(destination, entry));
+    fs.chmodSync(destination, stat.mode);
     return;
   }
   fs.mkdirSync(path.dirname(destination), { recursive: true });
@@ -488,14 +490,14 @@ function createSnapshot(state: UpdateState): SnapshotEntry[] {
   // git pack files are 0444 — so copy-in-place died with EACCES.)
   const buildRoot = `${snapshotRoot}.new`;
   const supersededRoot = `${snapshotRoot}.prev`;
-  fs.rmSync(buildRoot, { recursive: true, force: true });
+  if (!removeAll(buildRoot)) throw new Error(`Could not remove snapshot staging directory: ${buildRoot}`);
   // Self-heal the rename window: a crash between the two renames leaves
   // `snapshot/` absent with the complete prior copy still in `.prev` — put it
   // back rather than deleting the only complete copy on disk.
   if (!fs.existsSync(snapshotRoot) && fs.existsSync(supersededRoot)) {
     fs.renameSync(supersededRoot, snapshotRoot);
   }
-  fs.rmSync(supersededRoot, { recursive: true, force: true });
+  if (!removeAll(supersededRoot)) throw new Error(`Could not remove snapshot staging directory: ${supersededRoot}`);
   fs.mkdirSync(buildRoot, { recursive: true, mode: 0o700 });
   const bytesNeeded = MUTABLE_PATHS.reduce((total, relativePath) => {
     const source = path.join(state.projectRoot, relativePath);
@@ -519,7 +521,7 @@ function createSnapshot(state: UpdateState): SnapshotEntry[] {
   });
   if (fs.existsSync(snapshotRoot)) fs.renameSync(snapshotRoot, supersededRoot);
   fs.renameSync(buildRoot, snapshotRoot);
-  fs.rmSync(supersededRoot, { recursive: true, force: true });
+  if (!removeAll(supersededRoot)) throw new Error(`Could not remove snapshot staging directory: ${supersededRoot}`);
   return entries;
 }
 
@@ -627,6 +629,10 @@ function removeAll(target: string): boolean {
     const stat = lstatIfExists(target);
     if (!stat) return true;
     if (stat.isDirectory()) {
+      // Go module caches are read-only even when owned by this user.
+      if (stat.uid === process.getuid?.() && (stat.mode & 0o700) !== 0o700) {
+        fs.chmodSync(target, stat.mode | 0o700);
+      }
       const kept = fs.readdirSync(target).filter((name) => !removeAll(path.join(target, name)));
       if (kept.length > 0) return false;
       fs.rmdirSync(target);
