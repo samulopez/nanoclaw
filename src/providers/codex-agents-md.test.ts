@@ -19,10 +19,14 @@ vi.mock('../config.js', async (importOriginal) => ({
 import { composeGroupAgentsMd, CODEX_PROJECT_DOC_MAX_BYTES } from './codex-agents-md.js';
 import { closeDb, createAgentGroup, initTestDb, runMigrations } from '../db/index.js';
 import { ensureContainerConfig, updateContainerConfigJson } from '../db/container-configs.js';
-import { PERSONA_PREPEND_FILE } from '../group-persona.js';
 import type { AgentGroup } from '../types.js';
 
 const TEST_ROOT = '/tmp/nanoclaw-agents-md-test';
+
+// This module is the pre-contract compatibility path: on a contract core the
+// canonical template composes AGENTS.md and this spec is never consulted, so
+// its cap-handling guards only apply where the legacy path is live.
+const legacyIt = fs.existsSync(path.join(process.cwd(), 'src/provider-contracts/realize.ts')) ? it.skip : it;
 
 function group(folder: string): AgentGroup {
   return {
@@ -35,25 +39,25 @@ function group(folder: string): AgentGroup {
 }
 
 describe('composeGroupAgentsMd cap handling', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     if (fs.existsSync(TEST_ROOT)) fs.rmSync(TEST_ROOT, { recursive: true });
     fs.mkdirSync(path.join(TEST_ROOT, 'data'), { recursive: true });
-    const db = initTestDb();
-    runMigrations(db);
+    const db = await initTestDb();
+    await runMigrations(db);
   });
 
-  afterEach(() => {
-    closeDb();
+  afterEach(async () => {
+    await closeDb();
     if (fs.existsSync(TEST_ROOT)) fs.rmSync(TEST_ROOT, { recursive: true });
   });
 
-  it('writes the doc untouched when under the cap', () => {
+  legacyIt('writes the doc untouched when under the cap', async () => {
     const g = group('small');
-    createAgentGroup(g);
-    ensureContainerConfig(g.id);
+    await createAgentGroup(g);
+    await ensureContainerConfig(g.id);
     const groupDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agents-md-'));
     try {
-      composeGroupAgentsMd(g, groupDir);
+      await composeGroupAgentsMd(g, groupDir);
       const doc = fs.readFileSync(path.join(groupDir, 'AGENTS.md'), 'utf-8');
       expect(doc).not.toContain('Omitted for size');
       // Agent-authored skills must be told a home that is BOTH persistent and
@@ -68,10 +72,10 @@ describe('composeGroupAgentsMd cap handling', () => {
     }
   });
 
-  it('never reads or inlines the host memory index', () => {
+  legacyIt('never reads or inlines the host memory index', async () => {
     const g = group('with-memory');
-    createAgentGroup(g);
-    ensureContainerConfig(g.id);
+    await createAgentGroup(g);
+    await ensureContainerConfig(g.id);
     const groupDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agents-md-'));
     try {
       const sentinel = path.join(TEST_ROOT, 'host-secret');
@@ -79,7 +83,7 @@ describe('composeGroupAgentsMd cap handling', () => {
       fs.mkdirSync(path.join(groupDir, 'memory'), { recursive: true });
       fs.symlinkSync(sentinel, path.join(groupDir, 'memory', 'index.md'));
 
-      composeGroupAgentsMd(g, groupDir);
+      await composeGroupAgentsMd(g, groupDir);
 
       const doc = fs.readFileSync(path.join(groupDir, 'AGENTS.md'), 'utf-8');
       expect(doc).toContain('supplied by NanoClaw at session startup');
@@ -89,17 +93,17 @@ describe('composeGroupAgentsMd cap handling', () => {
     }
   });
 
-  it('degrades instead of throwing when MCP instructions push the doc over the cap', () => {
+  legacyIt('degrades instead of throwing when MCP instructions push the doc over the cap', async () => {
     const g = group('oversized');
-    createAgentGroup(g);
-    ensureContainerConfig(g.id);
-    updateContainerConfigJson(g.id, 'mcp_servers', {
+    await createAgentGroup(g);
+    await ensureContainerConfig(g.id);
+    await updateContainerConfigJson(g.id, 'mcp_servers', {
       bloated: { command: 'x', instructions: 'y'.repeat(CODEX_PROJECT_DOC_MAX_BYTES + 1024) },
       lean: { command: 'x', instructions: 'short and useful' },
     });
     const groupDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agents-md-'));
     try {
-      composeGroupAgentsMd(g, groupDir); // must not throw
+      await composeGroupAgentsMd(g, groupDir); // must not throw
 
       const doc = fs.readFileSync(path.join(groupDir, 'AGENTS.md'), 'utf-8');
       expect(Buffer.byteLength(doc, 'utf-8')).toBeLessThanOrEqual(CODEX_PROJECT_DOC_MAX_BYTES);
@@ -114,67 +118,7 @@ describe('composeGroupAgentsMd cap handling', () => {
   });
 });
 
-describe('composeGroupAgentsMd persona', () => {
-  beforeEach(() => {
-    if (fs.existsSync(TEST_ROOT)) fs.rmSync(TEST_ROOT, { recursive: true });
-    fs.mkdirSync(path.join(TEST_ROOT, 'data'), { recursive: true });
-    runMigrations(initTestDb());
-  });
-
-  afterEach(() => {
-    closeDb();
-    if (fs.existsSync(TEST_ROOT)) fs.rmSync(TEST_ROOT, { recursive: true });
-  });
-
-  it('inlines the persona as the first section, before the runtime contract', () => {
-    const g = group('persona');
-    createAgentGroup(g);
-    ensureContainerConfig(g.id);
-    const groupDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agents-md-'));
-    try {
-      fs.writeFileSync(path.join(groupDir, PERSONA_PREPEND_FILE), 'You are an SDR agent.\n');
-      composeGroupAgentsMd(g, groupDir);
-      const doc = fs.readFileSync(path.join(groupDir, 'AGENTS.md'), 'utf-8');
-      expect(doc).toContain('You are an SDR agent.');
-      // First markdown heading (the HEADER is an HTML comment, not a `# ` heading).
-      const firstHeading = doc.split('\n').find((line) => line.startsWith('# '));
-      expect(firstHeading).toBe('# Persona');
-    } finally {
-      fs.rmSync(groupDir, { recursive: true, force: true });
-    }
-  });
-
-  it('never evicts the persona even when the doc exceeds the cap', () => {
-    const g = group('persona-big');
-    createAgentGroup(g);
-    ensureContainerConfig(g.id);
-    updateContainerConfigJson(g.id, 'mcp_servers', {
-      bloat: { command: 'x', instructions: 'B'.repeat(CODEX_PROJECT_DOC_MAX_BYTES + 1024) },
-    });
-    const groupDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agents-md-'));
-    try {
-      fs.writeFileSync(path.join(groupDir, PERSONA_PREPEND_FILE), 'PERSONA_MARKER body');
-      composeGroupAgentsMd(g, groupDir);
-      const doc = fs.readFileSync(path.join(groupDir, 'AGENTS.md'), 'utf-8');
-      expect(Buffer.byteLength(doc, 'utf-8')).toBeLessThanOrEqual(CODEX_PROJECT_DOC_MAX_BYTES);
-      expect(doc).toContain('PERSONA_MARKER'); // survived eviction
-      expect(doc).toContain('Omitted for size');
-    } finally {
-      fs.rmSync(groupDir, { recursive: true, force: true });
-    }
-  });
-
-  it('omits the persona section when no prepend file is present', () => {
-    const g = group('no-persona');
-    createAgentGroup(g);
-    ensureContainerConfig(g.id);
-    const groupDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agents-md-'));
-    try {
-      composeGroupAgentsMd(g, groupDir);
-      const doc = fs.readFileSync(path.join(groupDir, 'AGENTS.md'), 'utf-8');
-      expect(doc).not.toContain('# Persona');
-    } finally {
-      fs.rmSync(groupDir, { recursive: true, force: true });
-    }
-  });
-});
+// The persona rules (leads the document, never evicted, absent without a
+// prepend file) belong to the shared composer and are pinned in trunk's
+// src/project-doc-compose.test.ts. Re-asserting them here would pin trunk
+// behavior from a branch that cannot be edited in the same change.

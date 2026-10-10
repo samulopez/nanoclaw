@@ -1,28 +1,11 @@
 /**
- * Codex provider setup — auth walk-through + install verification.
- *
- * Codex-owned payload code: when the codex provider moves to the `providers`
- * branch, this file travels with it and `/add-codex` copies it back in. The
- * only trunk reach-in is one import + one picker entry in setup/auto.ts.
- *
- * Auth honors the v2 credential invariant — everything lands in the OneCLI
- * vault, nothing in .env, nothing in the container:
- *   - ChatGPT subscription (the common case): `codex login` (browser) or
- *     `codex login --device-auth` (URL + pairing code) runs with CODEX_HOME
- *     pointed at a throwaway dir; the auth.json written there is stored
- *     WHOLE in the vault (`--file … --host-pattern chatgpt.com`) and the dir
- *     is deleted. The gateway injects it in flight; the container only ever
- *     sees the `onecli-managed` placeholder.
- *   - API key: pasted once, stored as an `openai` secret for api.openai.com.
- *
- * Session-isolation invariant: the vaulted ChatGPT session must be DEDICATED
- * to the gateway. Never vault a copy of the user's live ~/.codex/auth.json.
- * OpenAI rotates refresh tokens, so two consumers sharing one OAuth session
- * strand each other on refresh, and replaying the stale token trips reuse
- * detection — which invalidates the whole session family server-side
- * (`token_invalidated`) for the gateway AND the user's personal Codex CLI.
+ * Codex owns its login prompts and dedicated OAuth session. The selected
+ * gateway owns credential storage, injection, and refresh. No personal
+ * ~/.codex/auth.json is copied: rotating one session from two consumers
+ * would invalidate it. Both setup entry points use this provider hook.
  */
-import { execFileSync, spawn, spawnSync } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
+import { getCredentialStore, type ProviderCredentialStore } from '../gateways/credential-store.js';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -36,45 +19,27 @@ import { brandBody, note } from '../lib/theme.js';
 import * as setupLog from '../logs.js';
 import { type FailureAssistResult, registerSetupProvider } from './registry.js';
 
-// ─── OneCLI vault helpers ────────────────────────────────────────────────
-
-interface OnecliSecret {
-  id: string;
-  name: string;
-  type: string;
-  hostPattern: string | null;
-}
-
-function listSecrets(): OnecliSecret[] {
-  const out = execFileSync('onecli', ['secrets', 'list'], { encoding: 'utf-8' });
-  const parsed = JSON.parse(out) as { data?: unknown };
-  return Array.isArray(parsed.data) ? (parsed.data as OnecliSecret[]) : [];
-}
-
-function findOpenAISecret(secrets: OnecliSecret[]): OnecliSecret | undefined {
-  return secrets.find((s) => {
-    const name = s.name.toLowerCase();
-    const type = s.type.toLowerCase();
-    const hostPattern = (s.hostPattern ?? '').toLowerCase();
-    return (
-      name === 'codex' ||
-      name === 'openai' ||
-      type === 'openai' ||
-      hostPattern.includes('api.openai.com') ||
-      hostPattern.includes('chatgpt.com')
-    );
-  });
-}
-
-function openAISecretExists(): boolean {
-  try {
-    return findOpenAISecret(listSecrets()) !== undefined;
-  } catch {
-    return false;
-  }
-}
-
 // ─── auth step ───────────────────────────────────────────────────────────
+
+/**
+ * The gateway adapter's own message, kept beside the friendly line so a store
+ * failure names its cause in logs/setup.log and on screen. Adapters throw
+ * plain messages, but a parse error quotes
+ * its input (a malformed auth.json would put token text in the message), so
+ * token-shaped runs are masked and the message is kept to its first line.
+ */
+export function storeFailureMessage(err: unknown): string {
+  // A JSON parse error quotes a short excerpt of its input (shorter than the
+  // token mask below); the store may be parsing a credential file, so keep the
+  // error class and drop the excerpt without naming the input.
+  if (err instanceof SyntaxError) return `${err.name}: a JSON input could not be parsed (excerpt withheld)`;
+  const raw = err instanceof Error ? err.message : String(err);
+  // Mask before cutting: a cut could shorten a token below the mask threshold.
+  return raw
+    .replace(/[A-Za-z0-9_+/=-]{24,}/g, '[redacted]')
+    .split('\n')[0]
+    .slice(0, 300);
+}
 
 function ensureAnswer<T>(value: T | symbol): T {
   if (p.isCancel(value)) {
@@ -85,7 +50,8 @@ function ensureAnswer<T>(value: T | symbol): T {
 }
 
 export async function runCodexAuthStep(): Promise<void> {
-  if (openAISecretExists()) {
+  const store = await getCredentialStore();
+  if (await store.has('codex')) {
     p.log.success(brandBody('Your OpenAI account is already connected.'));
     setupLog.step('auth', 'skipped', 0, { REASON: 'openai-secret-already-present', PROVIDER: 'codex' });
     return;
@@ -108,7 +74,7 @@ export async function runCodexAuthStep(): Promise<void> {
         {
           value: 'api',
           label: 'Paste an OpenAI API key',
-          hint: 'pay-per-use; stored in OneCLI, never copied into the container',
+          hint: 'pay-per-use; stored in your gateway, never copied into the container',
         },
         {
           value: 'skip',
@@ -129,19 +95,19 @@ export async function runCodexAuthStep(): Promise<void> {
     );
     if (!confirmed) return runCodexAuthStep();
     setupLog.step('auth', 'skipped', 0, { REASON: 'user-skipped', PROVIDER: 'codex' });
-    p.log.warn(brandBody('Codex sign-in skipped. Add an OpenAI account to OneCLI before using Codex groups.'));
+    p.log.warn(brandBody('Codex sign-in skipped. Add an OpenAI account to your gateway before using Codex groups.'));
     return;
   }
 
   if (method === 'api') {
-    await runCodexApiKeyAuth();
+    await runCodexApiKeyAuth(store);
     return;
   }
 
-  await runCodexLoginAuth(method);
+  await runCodexLoginAuth(method, store);
 }
 
-async function runCodexApiKeyAuth(): Promise<void> {
+export async function runCodexApiKeyAuth(store: ProviderCredentialStore): Promise<void> {
   const key = ensureAnswer(
     await p.password({
       message: 'Paste your OpenAI API key (sk-…)',
@@ -150,36 +116,25 @@ async function runCodexApiKeyAuth(): Promise<void> {
   ) as string;
 
   try {
-    execFileSync(
-      'onecli',
-      [
-        'secrets',
-        'create',
-        '--name',
-        'Codex',
-        '--type',
-        'openai',
-        '--value',
-        key.trim(),
-        '--host-pattern',
-        'api.openai.com',
-      ],
-      { stdio: ['ignore', 'pipe', 'pipe'] },
-    );
+    await store.save('codex', { kind: 'api-key', value: key.trim() });
   } catch (err) {
-    setupLog.step('auth', 'failed', 0, { PROVIDER: 'codex', METHOD: 'api', ERROR: String(err) });
-    p.log.error(
-      brandBody(
-        "Couldn't save your OpenAI key to the vault. Make sure OneCLI is running (`onecli version`), then retry.",
-      ),
-    );
+    const message = storeFailureMessage(err);
+    setupLog.step('auth', 'failed', 0, {
+      PROVIDER: 'codex',
+      METHOD: 'api',
+      ERROR: 'gateway_store_failed',
+      MESSAGE: message,
+    });
+    p.log.error(brandBody("Couldn't save your OpenAI key to the vault. Check the selected gateway, then retry."));
+    console.log(k.dim(`   ${message}`));
     process.exit(1);
   }
   setupLog.step('auth', 'success', 0, { PROVIDER: 'codex', METHOD: 'api' });
   p.log.success(brandBody('OpenAI account connected.'));
 }
 
-export async function runCodexLoginAuth(method: 'browser' | 'device'): Promise<void> {
+export async function runCodexLoginAuth(method: 'browser' | 'device', store?: ProviderCredentialStore): Promise<void> {
+  store ??= await getCredentialStore();
   const codexCheck = spawnSync('codex', ['--version'], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
   if (codexCheck.status !== 0) {
     p.log.error(
@@ -200,7 +155,7 @@ export async function runCodexLoginAuth(method: 'browser' | 'device'): Promise<v
   }
   console.log();
 
-  // Session-isolation invariant (see file header): the login runs under a
+  // Session-isolation invariant: the login runs under a
   // throwaway CODEX_HOME so the vaulted session is dedicated to the gateway
   // and never shared with the user's personal ~/.codex.
   const loginHome = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-vault-login-'));
@@ -237,35 +192,27 @@ export async function runCodexLoginAuth(method: 'browser' | 'device'): Promise<v
   }
 
   try {
-    execFileSync(
-      'onecli',
-      [
-        'secrets',
-        'create',
-        '--name',
-        'Codex',
-        '--type',
-        'openai',
-        '--file',
-        authJsonPath,
-        '--host-pattern',
-        'chatgpt.com',
-      ],
-      { stdio: ['ignore', 'pipe', 'pipe'] },
-    );
+    await store.save('codex', { kind: 'oauth', file: authJsonPath });
   } catch (err) {
     removeLoginHome();
-    setupLog.step('auth', 'failed', durationMs, { PROVIDER: 'codex', METHOD: method, ERROR: String(err) });
+    const message = storeFailureMessage(err);
+    setupLog.step('auth', 'failed', durationMs, {
+      PROVIDER: 'codex',
+      METHOD: method,
+      ERROR: 'gateway_store_failed',
+      MESSAGE: message,
+    });
     p.log.error(
-      brandBody(
-        "Couldn't save your Codex credentials to the vault. Make sure OneCLI is running (`onecli version`), then retry.",
-      ),
+      brandBody("Couldn't save your Codex credentials to the vault. Check the selected gateway, then retry."),
     );
+    console.log(k.dim(`   ${message}`));
     process.exit(1);
   }
   removeLoginHome();
   setupLog.step('auth', 'success', durationMs, { PROVIDER: 'codex', METHOD: method });
-  p.log.success(brandBody('OpenAI account connected — credentials live in your OneCLI vault, never in the container.'));
+  p.log.success(
+    brandBody('OpenAI account connected — credentials live in your selected gateway, never in the container.'),
+  );
 }
 
 function runInherit(cmd: string, args: string[], extraEnv?: Record<string, string>): Promise<number> {
@@ -359,7 +306,12 @@ export async function offerCodexFailureAssist(ctx: AssistContext, projectRoot: s
 
   return new Promise<FailureAssistResult>((resolve) => {
     // codex accepts a positional initial prompt for the interactive TUI.
-    const child = spawn('codex', [prompt], { cwd: projectRoot, stdio: 'inherit' });
+    // Commands run in a read-only sandbox; anything that needs more (a
+    // write, the Docker socket, the service manager) asks first.
+    const child = spawn('codex', ['--sandbox', 'read-only', '--ask-for-approval', 'on-request', prompt], {
+      cwd: projectRoot,
+      stdio: 'inherit',
+    });
     child.on('close', () => {
       p.log.success(brandBody("Back from Codex. Let's continue."));
       resolve('launched');
@@ -379,9 +331,8 @@ export async function offerCodexFailureAssist(ctx: AssistContext, projectRoot: s
  * the payload moves to the providers branch, a failed check means the install
  * step should run (or the user finishes via /add-codex).
  */
-export function verifyCodexInstall(): { ok: boolean; problems: string[] } {
+export function verifyCodexInstall(root = process.cwd()): { ok: boolean; problems: string[] } {
   const problems: string[] = [];
-  const root = process.cwd();
 
   const requiredFiles = [
     'src/providers/codex.ts',
@@ -417,9 +368,9 @@ export function verifyCodexInstall(): { ok: boolean; problems: string[] } {
   return { ok: problems.length === 0, problems };
 }
 
-export async function runCodexInstallCheck(): Promise<void> {
+export async function runCodexInstallCheck(root = process.cwd()): Promise<void> {
   p.log.step(brandBody('Checking the Codex provider install…'));
-  const { ok, problems } = verifyCodexInstall();
+  const { ok, problems } = verifyCodexInstall(root);
   if (ok) {
     setupLog.step('codex-install', 'success', 0, {});
     p.log.success(brandBody('Codex installed properly.'));
@@ -431,9 +382,10 @@ export async function runCodexInstallCheck(): Promise<void> {
   for (const problem of problems) console.log(k.dim(`   • ${problem}`));
   p.log.warn(
     brandBody(
-      'Finish it with your coding agent of choice: open Codex CLI or Claude Code in this repo and run the /add-codex skill. Setup will continue — Codex groups will work once the install completes.',
+      'Finish it with your coding agent of choice: open Codex CLI or Claude Code in this repo and run the /add-codex skill.',
     ),
   );
+  throw new Error(`Codex provider is not fully installed: ${problems.join('; ')}`);
 }
 
 // Self-registration: the setup picker and the standalone `provider-auth` step

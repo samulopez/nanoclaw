@@ -23,8 +23,8 @@
  *
  * Memory and exchange archiving are NOT handled here either. The shared
  * runner scaffolds memory, while the container-side provider registers its
- * native SessionStart hook and persists exchanges through
- * `onExchangeComplete`.
+ * native SessionStart hook and reports completed exchanges for the declared
+ * archive plan.
  */
 import fs from 'fs';
 import path from 'path';
@@ -37,7 +37,10 @@ import { registerProviderContainerConfig } from './provider-container-registry.j
 
 registerProviderContainerConfig(
   'codex',
-  (ctx) => {
+  async (ctx) => {
+    const coreOwnsProviderSurfaces = (ctx as typeof ctx & { coreOwnsProviderSurfaces?: true }).coreOwnsProviderSurfaces;
+    if (coreOwnsProviderSurfaces) return {};
+
     // Per-group codex state (config.toml, thread metadata).
     const codexDir = path.join(DATA_DIR, 'v2-sessions', ctx.agentGroupId, '.codex-shared');
     fs.mkdirSync(codexDir, { recursive: true });
@@ -50,8 +53,8 @@ registerProviderContainerConfig(
     fs.closeSync(fs.openSync(path.join(codexDir, 'auth.json'), 'a'));
 
     // Compose this group's AGENTS.md and sync codex-native skill links.
-    const group = getAgentGroup(ctx.agentGroupId);
-    if (group) composeGroupAgentsMd(group, ctx.groupDir);
+    const group = await getAgentGroup(ctx.agentGroupId);
+    if (group) await composeGroupAgentsMd(group, ctx.groupDir);
     syncCodexSkillLinks(ctx.groupDir, ctx.selectedSkills);
     // Template skills live on the Claude plane (.claude-shared/skills); codex
     // reads .agents/skills (RO-mounted), so mirror them here, host-side, via the
