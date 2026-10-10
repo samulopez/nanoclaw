@@ -10,8 +10,11 @@ import fs from 'fs';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { getDeliveryAction } from '../../delivery.js';
-import { ensureSchema, openInboundDb } from '../../db/session-db.js';
-import { inboundDbPath, sessionDir } from '../../session-manager.js';
+import { ensureSchema, openInboundDb } from '../../mailbox/sqlite/session-db.js';
+import { inboundDbPath } from '../../mailbox/sqlite/paths.js';
+import { sessionDir } from '../../session-manager.js';
+import '../../mailbox/compose.js';
+import { getAgentMailbox } from '../../mailbox/index.js';
 import type Database from 'better-sqlite3';
 import type { Session } from '../../types.js';
 
@@ -47,6 +50,7 @@ function resultRow(db: Database.Database, requestId: string): Record<string, unk
 
 beforeEach(() => {
   fs.mkdirSync(sessionDir(AG, SESS), { recursive: true });
+  getAgentMailbox().prepare({ agentGroupId: AG, sessionId: SESS });
   ensureSchema(inboundDbPath(AG, SESS), 'inbound');
 });
 
@@ -62,7 +66,7 @@ describe('run_integration_tests delivery action', () => {
   it('refuses a group that is not in the allowlist (no command run)', async () => {
     const handler = getDeliveryAction('run_integration_tests')!;
     const requestId = 'it-unit-deny';
-    await handler({ action: 'run_integration_tests', requestId }, fakeSession(AG), {} as Database.Database);
+    await handler({ action: 'run_integration_tests', requestId }, fakeSession(AG));
 
     const db = openDb(AG);
     try {
@@ -78,11 +82,7 @@ describe('run_integration_tests delivery action', () => {
 
   it('ignores a request with an invalid requestId (writes nothing)', async () => {
     const handler = getDeliveryAction('run_integration_tests')!;
-    await handler(
-      { action: 'run_integration_tests', requestId: 'bad id; rm -rf' },
-      fakeSession(AG),
-      {} as Database.Database,
-    );
+    await handler({ action: 'run_integration_tests', requestId: 'bad id; rm -rf' }, fakeSession(AG));
 
     const db = openDb(AG);
     try {

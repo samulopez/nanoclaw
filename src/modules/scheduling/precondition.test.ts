@@ -13,8 +13,9 @@ vi.mock('../../container-config.js', () => ({
   resolveGroupTimezone: () => 'UTC',
 }));
 
-import { ensureSchema, openInboundDb } from '../../db/session-db.js';
-import { insertTaskRow as insertTask } from './db.js';
+import { ensureSchema, openInboundDb } from '../../mailbox/sqlite/session-db.js';
+import { insertTaskRow as insertTask } from '../../mailbox/sqlite/tasks.js';
+import { wrapSqliteInbound } from '../../mailbox/sqlite/index.js';
 import { applyDuePreconditions } from './precondition.js';
 import { handleRecurrence } from './recurrence.js';
 import type { Session } from '../../types.js';
@@ -65,7 +66,7 @@ describe('applyDuePreconditions', () => {
     const db = freshDb();
     insertTask(db, dueTask('task-1', { prompt: 'go', precondition: 'echo 0' }));
 
-    applyDuePreconditions(db, fakeSession());
+    applyDuePreconditions(wrapSqliteInbound(db), fakeSession());
 
     expect(statusOf(db, 'task-1')).toBe('completed');
   });
@@ -74,7 +75,7 @@ describe('applyDuePreconditions', () => {
     const db = freshDb();
     insertTask(db, dueTask('task-1', { prompt: 'go', precondition: 'echo 3' }));
 
-    applyDuePreconditions(db, fakeSession());
+    applyDuePreconditions(wrapSqliteInbound(db), fakeSession());
 
     expect(statusOf(db, 'task-1')).toBe('pending');
   });
@@ -83,7 +84,7 @@ describe('applyDuePreconditions', () => {
     const db = freshDb();
     insertTask(db, dueTask('task-1', { prompt: 'go' }));
 
-    applyDuePreconditions(db, fakeSession());
+    applyDuePreconditions(wrapSqliteInbound(db), fakeSession());
 
     expect(statusOf(db, 'task-1')).toBe('pending');
   });
@@ -92,7 +93,7 @@ describe('applyDuePreconditions', () => {
     const db = freshDb();
     insertTask(db, dueTask('task-1', { prompt: 'go', precondition: 'exit 7' }));
 
-    applyDuePreconditions(db, fakeSession());
+    applyDuePreconditions(wrapSqliteInbound(db), fakeSession());
 
     expect(statusOf(db, 'task-1')).toBe('pending');
   });
@@ -101,7 +102,7 @@ describe('applyDuePreconditions', () => {
     const db = freshDb();
     insertTask(db, dueTask('task-1', { prompt: 'go', precondition: 'echo nope' }));
 
-    applyDuePreconditions(db, fakeSession());
+    applyDuePreconditions(wrapSqliteInbound(db), fakeSession());
 
     expect(statusOf(db, 'task-1')).toBe('pending');
   });
@@ -113,7 +114,7 @@ describe('applyDuePreconditions', () => {
       processAfter: '2999-01-01T00:00:00.000Z',
     });
 
-    applyDuePreconditions(db, fakeSession());
+    applyDuePreconditions(wrapSqliteInbound(db), fakeSession());
 
     expect(statusOf(db, 'task-1')).toBe('pending');
   });
@@ -122,8 +123,8 @@ describe('applyDuePreconditions', () => {
     const db = freshDb();
     insertTask(db, dueTask('task-1', { prompt: 'go', precondition: 'echo 0' }));
 
-    applyDuePreconditions(db, fakeSession());
-    await handleRecurrence(db, fakeSession());
+    applyDuePreconditions(wrapSqliteInbound(db), fakeSession());
+    await handleRecurrence(wrapSqliteInbound(db), fakeSession());
 
     const rows = db
       .prepare(`SELECT id, status, recurrence, series_id, process_after FROM messages_in ORDER BY seq`)
