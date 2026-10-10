@@ -19,6 +19,7 @@ function templateSkill(groupId: string, name: string, file: string, content: str
   const dir = path.join(DATA_DIR, 'v2-sessions', groupId, '.claude-shared', 'skills', name);
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, file), content);
+  fs.chmodSync(path.join(dir, file), 0o644);
 }
 
 beforeEach(() => {
@@ -47,7 +48,7 @@ describe('materializeTemplateSkills', () => {
     fs.symlinkSync('/app/skills/code-review', path.join(src, 'code-review'));
     const dest = path.join(TEST_ROOT, 'grp5', '.agents', 'skills');
 
-    materializeTemplateSkills('g5', dest);
+    materializeTemplateSkills('g5', TEST_ROOT, ['grp5', '.agents', 'skills']);
 
     expect(fs.existsSync(path.join(dest, 'widget', 'SKILL.md'))).toBe(true);
     expect(fs.existsSync(path.join(dest, 'code-review'))).toBe(false);

@@ -169,3 +169,13 @@ This affects only groups created afterward. Per-group `ncl groups config update 
 - **Container dies at boot, channel silent:** `grep 'Container exited non-zero' logs/nanoclaw.error.log` — the `stderrTail` carries the reason (e.g. `Unknown provider: codex. Registered: claude` means the barrels aren't wired in the running build).
 - **In-channel `Error: spawn codex ENOENT` on every message:** the image predates the manifest entry — re-run `./container/build.sh`.
 - **Auth errors mid-conversation:** the vault secret is missing or stale — re-run `pnpm exec tsx setup/index.ts --step provider-auth codex` (subscription re-login updates the vault copy).
+
+## Local customization preservation
+
+After copying registry payloads, retain this install's 30-minute turn limit and
+its non-secret Git proxy authentication setting. The hook fails if either
+upstream seam changes and needs review.
+
+```nc:run effect:refresh
+node .claude/skills/add-codex/scripts/local-customizations.mjs
+```
