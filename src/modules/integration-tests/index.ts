@@ -175,7 +175,7 @@ registerDeliveryAction(
       }
     };
 
-    child.on('error', async (err) => {
+    const onError = async (err: Error) => {
       clearTimeout(timer);
       inFlight.delete(session.id);
       log.error('run_integration_tests: spawn error', { requestId, sessionId: session.id, err });
@@ -189,9 +189,14 @@ registerDeliveryAction(
       } catch {
         /* best effort */
       }
-    });
+    };
 
-    child.on('close', (code) => finish(code));
+    child.on('error', (err) => {
+      void onError(err);
+    });
+    child.on('close', (code) => {
+      void finish(code);
+    });
   },
   unguarded(
     'allowlist-keyed host runner — the agent supplies no command, only a requestId; the command and cwd come from ALLOWLIST keyed on agent_group_id',

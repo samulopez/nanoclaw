@@ -33,11 +33,6 @@ import type { Session } from '../../types.js';
 
 const PRECONDITION_TIMEOUT_MS = 30_000;
 
-interface DueTaskRow {
-  id: string;
-  content: string;
-}
-
 /**
  * Evaluate the precondition of every due task in this session. Rows whose
  * precondition reports "no work" are completed in place so the next
